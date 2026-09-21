@@ -46,9 +46,9 @@ jobs:
       - run: npm run build
 
       # dist/ is gitignored, so this also proves a clean clone produces a package
-      # whose bundled entrypoint works with OpenCode 2.0.11's TUI runtime versions.
+      # whose bundled entrypoint works with OpenCode 2.0.12's TUI runtime versions.
       # Its catalog resolves Solid 1.9.15, while OpenTUI's npm peer still names 1.9.12.
-      - name: Verify the packed artifact with OpenCode 2.0.11 runtime versions
+      - name: Verify the packed artifact with OpenCode 2.0.12 runtime versions
         run: |
           mkdir -p "$RUNNER_TEMP/enhanced-composer-pack" "$RUNNER_TEMP/enhanced-composer-install"
           npm pack --pack-destination "$RUNNER_TEMP/enhanced-composer-pack"

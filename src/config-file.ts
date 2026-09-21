@@ -7,12 +7,12 @@
 // syntax, the comment handling, and the shape of an edit match the host
 // exactly instead of approximating it.
 //
-// What the target host (OpenCode v2.0.11, verified against its source and
+// What the target host (OpenCode v2.0.12, verified against its source and
 // documentation) does:
 //
 //   * The file is `cli.json` inside a non-empty `$OPENCODE_CONFIG_DIR`,
 //     otherwise `opencode` under `$XDG_CONFIG_HOME`, otherwise
-//     `~/.config/opencode`. The v2.0.11 launcher treats an empty config
+//     `~/.config/opencode`. The v2.0.12 launcher treats an empty config
 //     directory as unset, so the editor follows that fallback rather than
 //     writing `./cli.json`.
 //     `$OPENCODE_TEST_HOME` changes `Global.Path.home`, but not this config

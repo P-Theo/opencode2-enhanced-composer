@@ -63,7 +63,7 @@ function createFakeHost(): FakeHost {
 
   const fake = {
     options: {},
-    app: { version: "2.0.11", channel: "stable" },
+    app: { version: "2.0.12", channel: "stable" },
     renderer: { widthMethod: "unicode" },
     theme: {
       text: { muted: themeMuted, base: themeBase },
