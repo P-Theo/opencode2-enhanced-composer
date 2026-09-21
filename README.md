@@ -4,7 +4,11 @@ Enhanced Composer is an OpenCode 2 TUI plugin that replaces the prompt footer an
 
 > **A Nerd Font is required to display all default glyphs correctly.** If you prefer not to use a nerd font, use **Customize footer** (`/customize-footer`) to replace those icons with text or hide them.
 
-![Example composer showing the widgets in a session](docs/screenshots/opencode2_enhanced_footer_default.png)
+<p align="center">
+  <img src="docs/screenshots/enhanced_composer_example_left.png" alt="Example composer — left corner widgets" width="48%">
+    &nbsp;
+  <img src="docs/screenshots/enhanced_composer_example_right.png" alt="Example composer — right corner widgets" width="48%">
+</p>
 
 Every widget can be moved between the four corners of the composer, reordered, and hidden. Most widgets also have appearance controls; TPS always uses a `~N t/s` rate label.
 
