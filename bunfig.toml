@@ -1,0 +1,3 @@
+# Use Solid's reactive client build so render tests catch broken updates.
+[test]
+preload = ["@opentui/solid/preload"]

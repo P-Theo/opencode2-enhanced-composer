@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P-Theo/opencode2-enhanced-composer/main/options.schema.json",
+  "title": "opencode2-enhanced-composer plugin options",
+  "description": "Settings for the plugin entry's options object in cli.json.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "layout": { "$ref": "#/$defs/layout" },
+    "appearance": { "$ref": "#/$defs/appearance" },
+    "overflow": { "$ref": "#/$defs/overflow" },
+    "refreshHz": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 8,
+      "description": "How often the live TPS label refreshes per second."
+    },
+    "bytesPerToken": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 4.75,
+      "description": "Bytes per estimated token until OpenCode reports step usage."
+    }
+  },
+  "examples": [
+    {
+      "layout": {
+        "topLeft": ["spinner", "bgagent"],
+        "topRight": ["tps"],
+        "bottomLeft": ["directory", "branch"],
+        "bottomRight": ["input", "output", "cache", "cost", "context"]
+      },
+      "appearance": {
+        "spinner": "blocks",
+        "directory": { "format": "name", "icon": "f115" },
+        "branch": "f418",
+        "worktree": "e5fb",
+        "tokens": "words",
+        "cache": "text",
+        "cost": "currency",
+        "bgagent": "ec20",
+        "context": { "format": "tokens", "bar": "slanted", "label": "context", "order": "bar-text-label" },
+        "separator": "pipe"
+      },
+      "overflow": { "preset": "balanced" }
+    }
+  ],
+  "$defs": {
+    "literalText": {
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\ud800-\\udfff\\u2028\\u2029]*$",
+      "description": "Literal single-line text, including symbols and emoji. Empty text is allowed."
+    },
+    "customText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": { "text": { "$ref": "#/$defs/literalText" } }
+    },
+    "customTokenLabels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": { "$ref": "#/$defs/literalText" },
+        "output": { "$ref": "#/$defs/literalText" }
+      }
+    },
+    "widgetID": {
+      "enum": ["spinner", "directory", "branch", "input", "output", "cache", "cost", "context", "tps", "bgagent"],
+      "description": "A footer widget. List each widget at most once across all corners. Omitted widgets are hidden."
+    },
+    "widgetList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/widgetID" },
+      "uniqueItems": true
+    },
+    "layout": {
+      "type": "object",
+      "description": "Widgets in display order for each corner. Omitted corners are empty when layout is supplied.",
+      "additionalProperties": false,
+      "properties": {
+        "topLeft": { "allOf": [{ "$ref": "#/$defs/widgetList" }] },
+        "topRight": { "allOf": [{ "$ref": "#/$defs/widgetList" }] },
+        "bottomLeft": { "allOf": [{ "$ref": "#/$defs/widgetList" }] },
+        "bottomRight": { "allOf": [{ "$ref": "#/$defs/widgetList" }] }
+      },
+      "default": {
+        "topLeft": ["spinner", "bgagent"],
+        "topRight": ["tps"],
+        "bottomLeft": ["directory", "branch"],
+        "bottomRight": ["input", "output", "cache", "cost", "context"]
+      }
+    },
+    "appearance": {
+      "type": "object",
+      "description": "Widget appearance. Missing fields use defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "spinner": {
+          "enum": ["braille", "blocks", "text"],
+          "default": "blocks",
+          "description": "Spinner style: braille frames, the block scanner, or static `Running` text."
+        },
+        "directory": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "enum": ["name", "path"],
+              "default": "name",
+              "description": "Directory text: the folder name, or the home-abbreviated path."
+            },
+            "icon": {
+              "oneOf": [{ "enum": ["f115", "f07b", "f07c", "none"] }, { "$ref": "#/$defs/customText" }],
+              "default": "f115",
+              "description": "Folder icon or custom text. Empty text hides the icon."
+            }
+          }
+        },
+        "branch": {
+          "oneOf": [{ "enum": ["e0a0", "f418", "colon"] }, { "$ref": "#/$defs/customText" }],
+          "default": "f418",
+          "description": "Branch icon or custom text. The colon preset joins the branch to an immediately preceding directory."
+        },
+        "worktree": {
+          "oneOf": [{ "enum": ["e5fb", "ec7d", "none"] }, { "$ref": "#/$defs/customText" }],
+          "default": "e5fb",
+          "description": "Replaces the folder icon in worktrees. None or empty text keeps the ordinary folder icon."
+        },
+        "tokens": {
+          "oneOf": [{ "enum": ["words", "arrows"] }, { "$ref": "#/$defs/customTokenLabels" }],
+          "default": "words",
+          "description": "Input and output token labels."
+        },
+        "cache": {
+          "oneOf": [{ "enum": ["text", "f49b", "none"] }, { "$ref": "#/$defs/customText" }],
+          "default": "text",
+          "description": "Cache label. None or empty text keeps only the percentage."
+        },
+        "cost": {
+          "oneOf": [{ "enum": ["currency", "labeled"] }, { "$ref": "#/$defs/customText" }],
+          "default": "currency",
+          "description": "Label before the USD cost."
+        },
+        "bgagent": {
+          "oneOf": [{ "enum": ["arrow", "ec20", "text"] }, { "$ref": "#/$defs/customText" }],
+          "default": "ec20",
+          "description": "Icon or label before the running subagent count."
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "enum": ["tokens", "tokens-percent", "percent", "tokens-limit", "off"],
+              "default": "tokens",
+              "description": "Context usage text. Falls back to token count when percentage or limit data is unavailable."
+            },
+            "bar": {
+              "enum": ["solid", "slanted", "off"],
+              "default": "slanted",
+              "description": "Context usage bar. Hidden when the model limit is unknown."
+            },
+            "label": {
+              "enum": ["none", "ctx", "context"],
+              "default": "context",
+              "description": "Label beside context usage."
+            },
+            "order": {
+              "enum": ["bar-text-label", "bar-label-text", "text-bar-label", "text-label-bar", "label-bar-text", "label-text-bar"],
+              "default": "bar-text-label",
+              "description": "Display order of the bar, usage text, and label. Hidden parts are skipped."
+            }
+          }
+        },
+        "separator": {
+          "oneOf": [{ "enum": ["dot", "pipe", "space"] }, { "$ref": "#/$defs/customText" }],
+          "default": "pipe",
+          "description": "Separator between adjacent metrics. Custom text keeps exactly the supplied spacing."
+        }
+      }
+    },
+    "overflow": {
+      "type": "object",
+      "description": "Which widgets disappear first when space runs out.",
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "enum": ["balanced", "usage-first", "location-first", "custom"],
+          "default": "balanced",
+          "description": "Choose a preset or supply a custom hideFirst list."
+        },
+        "hideFirst": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/widgetID" },
+          "uniqueItems": true,
+          "description": "List all widget IDs once, from first to last hidden. Required for custom overflow."
+        }
+      },
+      "if": { "properties": { "preset": { "const": "custom" } }, "required": ["preset"] },
+      "then": { "required": ["hideFirst"] }
+    }
+  }
+}
