@@ -1386,4 +1386,125 @@ describe("built render", () => {
       h.restore()
     }
   })
+
+  test("holds the live rate across tools and steps until new output arrives", async () => {
+    const h = createHarness()
+
+    seed(h, { status: "running" })
+    const realNow = Date.now
+    let now = 0
+    Date.now = () => now
+
+    const app = await renderClaim(h, "composer", { sessionID: "ses_test" }, 100, 2)
+
+    try {
+      await app.renderOnce()
+      expect(app.captureCharFrame()).not.toContain("t/s")
+
+      h.emit("session.execution.started", { sessionID: "ses_test" }, 0)
+      h.emit("session.step.started", { sessionID: "ses_test", assistantMessageID: "m1" }, 0)
+      h.emit(
+        "session.text.started",
+        { sessionID: "ses_test", assistantMessageID: "m1", ordinal: 0 },
+        0,
+      )
+      h.emit(
+        "session.text.delta",
+        { sessionID: "ses_test", assistantMessageID: "m1", ordinal: 0, delta: "a".repeat(95) },
+        3200,
+      )
+      now = 3200
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+
+      // Stream end while tools still run: the label holds and the timer flushes once.
+      h.emit("session.step.streamed", { sessionID: "ses_test", assistantMessageID: "m1" }, 3200)
+      now = 3200
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+      expect(h.timer.cleared).toBeGreaterThan(0)
+
+      // A long tool wait with no new output changes nothing; the timer stays stopped.
+      const createdAfterStream = h.timer.created
+      const clearedAfterStreamIdle = h.timer.cleared
+      now = 8000
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+      expect(h.timer.created).toBe(createdAfterStream)
+      expect(h.timer.cleared).toBe(clearedAfterStreamIdle)
+
+      // Tool progress still refreshes once without restarting a live timer.
+      h.emit("session.tool.progress", { sessionID: "ses_test" }, 8000)
+      now = 8000
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+
+      // Step settlement with exact usage keeps the held live rate, not the average.
+      h.emit(
+        "session.step.ended",
+        { sessionID: "ses_test", assistantMessageID: "m1", tokens: { output: 20, reasoning: 0 } },
+        10_000,
+      )
+      now = 10_000
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+
+      // A new step with no samples keeps the previous hold.
+      h.emit("session.step.started", { sessionID: "ses_test", assistantMessageID: "m2" }, 20_000)
+      now = 20_000
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~80.0 t/s")
+
+      // New observable output replaces the hold and restarts the live timer.
+      const createdBeforeDelta = h.timer.created
+      h.emit(
+        "session.text.started",
+        { sessionID: "ses_test", assistantMessageID: "m2", ordinal: 0 },
+        20_000,
+      )
+      h.emit(
+        "session.text.delta",
+        { sessionID: "ses_test", assistantMessageID: "m2", ordinal: 0, delta: "a".repeat(50) },
+        20_250,
+      )
+      now = 20_250
+      h.tick()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("~44.0 t/s")
+      expect(h.timer.created).toBeGreaterThan(createdBeforeDelta)
+
+      // Completion freezes to the weighted run average, distinct from the hold.
+      h.emit(
+        "session.text.ended",
+        { sessionID: "ses_test", assistantMessageID: "m2", ordinal: 0, text: "a".repeat(50) },
+        20_250,
+      )
+      h.emit("session.step.streamed", { sessionID: "ses_test", assistantMessageID: "m2" }, 20_250)
+      h.emit(
+        "session.step.ended",
+        { sessionID: "ses_test", assistantMessageID: "m2", tokens: { output: 11, reasoning: 0 } },
+        21_000,
+      )
+      h.emit("session.execution.succeeded", { sessionID: "ses_test" }, 21_000)
+      now = 21_000
+      h.tick()
+      await app.renderOnce()
+      const line = app.captureCharFrame().split("\n")[0] ?? ""
+
+      expect(line).toContain("t/s")
+      expect(line).not.toContain("~80.0 t/s")
+      expect(line).not.toContain("~44.0 t/s")
+    } finally {
+      Date.now = realNow
+      app.renderer.destroy()
+      h.cleanup()
+      h.restore()
+    }
+  })
 })

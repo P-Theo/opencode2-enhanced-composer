@@ -18,9 +18,9 @@
 //
 // Which widgets exist and where they sit is entirely the layout arrays'
 // decision; nothing here is placement-specific. The token-throughput engine
-// lives in `tps.ts`, and its semantics — observable-stream estimate,
-// exact-usage reconciliation, frozen run average — are untouched by where
-// the TPS widget is placed.
+// lives in `tps.ts`, and its semantics — observable-stream estimate held
+// across tools and between steps, exact-usage reconciliation, frozen run
+// average — are untouched by where the TPS widget is placed.
 import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import { RGBA } from "@opentui/core"
@@ -253,7 +253,9 @@ const definition: Plugin.Definition = {
     // Rendering is throttled: deltas arrive at 100-200/s, and every bump costs
     // a memo recompute plus a terminal repaint to move a number no one can read
     // faster than ~10 Hz. Handlers only set a flag; the timer does the work,
-    // and it only runs while a session is actually streaming.
+    // and it only runs while a live rate can still change with time. A held
+    // rate across tools or between steps needs no timer; lifecycle events still
+    // flush one final version bump through the dirty flag.
     let dirty = false
     let timer: ReturnType<typeof setInterval> | undefined
 
@@ -273,8 +275,10 @@ const definition: Plugin.Definition = {
 
       const running = tracker.hasRunning(Date.now())
 
-      // The observable live rate decays only through a short stale tail. Opaque
-      // provider work after that is not charged to a numerator we cannot see.
+      // The observable live rate decays only through a short stale tail while
+      // streaming, then freezes at the stream-end boundary. Opaque provider
+      // work after that is not charged to a numerator we cannot see. A dirty
+      // lifecycle event still flushes one final render even when the timer stops.
       if (dirty || running) {
         dirty = false
         setVersion((value) => value + 1)
