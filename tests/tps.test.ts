@@ -519,7 +519,6 @@ describe("TpsTracker", () => {
     tracker.markStreamed("s", "m1", 3200)
     expect(tracker.value("s", 3200)?.tps).toBeCloseTo(80)
 
-    // Delayed tool completion settles exact usage at 10000 ms.
     tracker.finishStep("s", "m1", 20, 10_000)
     const running = tracker.value("s", 10_000)
 
@@ -613,7 +612,6 @@ describe("TpsTracker", () => {
     tracker.beginBlock("s", "m2", "tool:t1", 6100)
     tracker.finishBlock("s", "m2", "tool:t1", "a".repeat(95), 6500)
     tracker.markStreamed("s", "m2", 6600)
-    // No observable samples: the buffered-only boundary must not clear the hold.
     expect(tracker.value("s", 6600)?.tps).toBeCloseTo(80)
     tracker.finishStep("s", "m2", 20, 9000)
     expect(tracker.value("s", 9000)?.tps).toBeCloseTo(80)
@@ -664,7 +662,6 @@ describe("TpsTracker", () => {
     expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
     expect(tracker.hasRunning(2000)).toBe(false)
 
-    // Resumed output after the earlier boundary reopens the stream.
     tracker.push("s", "a".repeat(95), 6000, "m1", "text:0")
     expect(tracker.hasRunning(6000)).toBe(true)
     expect(tracker.value("s", 6000)).not.toBeNull()

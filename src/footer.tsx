@@ -253,9 +253,7 @@ const definition: Plugin.Definition = {
     // Rendering is throttled: deltas arrive at 100-200/s, and every bump costs
     // a memo recompute plus a terminal repaint to move a number no one can read
     // faster than ~10 Hz. Handlers only set a flag; the timer does the work,
-    // and it only runs while a live rate can still change with time. A held
-    // rate across tools or between steps needs no timer; lifecycle events still
-    // flush one final version bump through the dirty flag.
+    // and it only runs while a live rate can still change with time.
     let dirty = false
     let timer: ReturnType<typeof setInterval> | undefined
 

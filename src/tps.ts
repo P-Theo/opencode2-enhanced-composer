@@ -29,9 +29,7 @@ export function formatTpsLabel(value: TpsValue): string {
 
 // Ported from opencode2-tps. It measures the rate of the *observable* model
 // stream: bytes to a rolling estimate while output arrives, exact step usage
-// once the host reports it, and a frozen average after the run ends. While the
-// run is active the display holds the last live estimate across tool execution
-// and between steps instead of falling back to the cumulative average.
+// once the host reports it, and a frozen average after the run ends.
 
 export interface TpsConfig {
   readonly bytesPerToken: number // live and partial-output estimate only
@@ -303,12 +301,10 @@ export class TpsTracker {
 
     if (!step) return
 
-    // Preserve the running display before samples are discarded. Prefer the
-    // stream-end boundary; fall back to the last content boundary. Never use
-    // delayed settlement time, and never invent a rate when neither boundary
-    // exists. Skip the capture when the boundary predates the newest sample:
-    // those newer bytes would be divided by a duration clamped to the live
-    // minimum, inflating the held rate.
+    // Preserve the running display before samples are discarded. Capture at
+    // the boundary, never at delayed settlement time, and skip when it
+    // predates the newest sample: those newer bytes would be divided by a
+    // duration clamped to the live minimum, inflating the held rate.
     const boundary = step.streamedAt ?? step.lastBoundaryAt
     const lastSample = step.samples.at(-1)
 
@@ -425,10 +421,8 @@ export class TpsTracker {
     if (tokens <= 0) return null
     const settledTps = st.settledDurationMs > 0 ? st.settledTokens / (st.settledDurationMs / 1000) : null
 
-    // Running display: the current step's live rate (boundary-clamped once its
-    // stream ends), otherwise the held live rate, otherwise the settled
-    // average. A newly settled average never replaces the held live value; the
-    // frozen final average is computed separately in `finish()`.
+    // A settled average never displaces the held live value; the frozen final
+    // average is computed separately in `finish()`.
     const tps = active ? (this.liveTps(active, now) ?? st.heldLiveTps ?? settledTps) : (st.heldLiveTps ?? settledTps)
 
     return {
