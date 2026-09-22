@@ -634,6 +634,27 @@ describe("TpsTracker", () => {
     expect(tracker.value("s", 11_000)?.tps).toBeCloseTo(20 / 1.2)
   })
 
+  test("a fallback boundary older than the newest sample preserves the prior hold", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 1000)
+    tracker.markStreamed("s", "m1", 1250)
+    tracker.finishStep("s", "m1", 20, 5000)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+
+    // m2's guessed boundary (its last content block at 6500) predates its
+    // newest sample at 7000. Capturing there would count 400 tokens over
+    // the 250 ms duration floor — 1600 t/s — so the stale fallback must
+    // leave the prior hold alone.
+    tracker.beginStep("s", "m2", 6000)
+    tracker.finishBlock("s", "m2", "text:0", "", 6500)
+    tracker.push("s", "b".repeat(1900), 7000, "m2", "text:1")
+    tracker.finishStep("s", "m2", undefined, 9000)
+    expect(tracker.value("s", 9000)?.tps).toBeCloseTo(80)
+  })
+
   test("a retried message reopens live calculation with new samples", () => {
     const tracker = new TpsTracker()
 

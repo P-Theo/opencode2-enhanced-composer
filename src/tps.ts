@@ -306,10 +306,13 @@ export class TpsTracker {
     // Preserve the running display before samples are discarded. Prefer the
     // stream-end boundary; fall back to the last content boundary. Never use
     // delayed settlement time, and never invent a rate when neither boundary
-    // exists.
+    // exists. Skip the capture when the boundary predates the newest sample:
+    // those newer bytes would be divided by a duration clamped to the live
+    // minimum, inflating the held rate.
     const boundary = step.streamedAt ?? step.lastBoundaryAt
+    const lastSample = step.samples.at(-1)
 
-    if (boundary !== null) {
+    if (boundary !== null && lastSample !== undefined && boundary >= lastSample.timestamp) {
       const live = this.liveTps(step, boundary)
 
       if (live !== null) st.heldLiveTps = live
