@@ -34,6 +34,8 @@ The session counters come from OpenCode's cumulative session token and cost fiel
 | `tps` | A live token-throughput estimate while output is observable, then the frozen average for the completed run. It appears only once a rate exists. |
 | `bgagent` | The number of running direct subagents of the session; it hides when the count is zero. |
 
+> **Spinner color compatibility:** OpenCode 2.0.15 exposes only `accent`, `interactive`, and `neutral` hues in its public theme types. The spinner uses those hues or a hex agent color directly and falls back to the theme's categorical palette for other named colors. On older OpenCode 2 versions, the spinner color may not match the agent's color. Animation is unaffected.
+
 While a run streams, TPS (tokens per second) is estimated from observed UTF-8 bytes using `bytesPerToken`. Once a step reports its output and reasoning usage, those exact tokens replace that step's estimate, and at run end the cumulative average stays frozen until the next prompt. The label always reads `~N t/s`, so TPS has no appearance setting. The tracker is the same engine as the standalone [opencode2-tps](https://github.com/P-Theo/opencode2-tps) plugin, minus its `display` option. See [TPS rate tuning](#tps-rate-tuning) for `refreshHz` and `bytesPerToken`.
 
 ## Appearance options

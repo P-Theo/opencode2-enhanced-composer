@@ -11,7 +11,7 @@ Load the checkout using [Run from source](../README.md#run-from-source). See [Ar
 | `npm run lint` | Run oxlint. |
 | `npm run check` | Check TypeScript types. |
 | `npm test` | Run the Bun tests. |
-| `npm run check:compatibility` | Check the OpenCode SDK pin and README version floor. |
+| `npm run check:compatibility` | Check that the OpenCode plugin and theme pins match and that the README minimum is no newer than the pin. |
 | `npm run build` | Rebuild `dist/`. |
 | `npm pack` | Run lint, type-checks, tests, and build, then create the publishable tarball. |
 
@@ -21,6 +21,6 @@ Tests live in [tests/](../tests), mostly named after the source module. `layout-
 
 Local directory entries load the root `tui.tsx`. Published packages load `dist/tui.js`, built from `src/footer.tsx` by [scripts/build.mjs](../scripts/build.mjs). Test the packed artifact when changing runtime code or packaging. CI also imports it against the host's bundled runtime versions.
 
-Keep `options.schema.json` aligned with `src/options.ts`. Update the pinned `@opencode/plugin` version and README compatibility floor together when a change requires a newer host.
+Keep `options.schema.json` aligned with `src/options.ts`. Keep `@opencode/plugin` and `@opencode/theme` pinned to the same version so TypeScript checks the host's theme types. Raise the README minimum only when runtime behavior requires a newer host. A typings-only bump does not change it. The compatibility script checks these version labels, not runtime behavior.
 
 See [Release](RELEASE.md) for publishing.

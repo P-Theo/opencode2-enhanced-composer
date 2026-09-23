@@ -222,6 +222,8 @@ interface FakeContext {
   readonly theme: {
     readonly text: { readonly muted: string }
     readonly border: { readonly base: RGBA }
+    readonly hue?: { readonly accent: { readonly 200: RGBA } }
+    readonly categorical?: readonly { readonly 200: RGBA }[]
   }
   readonly storage: {
     readonly memory: (
@@ -242,7 +244,7 @@ const setupWithFakeContext = definition.setup as unknown as (
   context: FakeContext,
 ) => ReturnType<typeof definition.setup>
 
-function createHarness(options: StatusOptionsInput & TpsOptionsInput = {}) {
+function createHarness(options: StatusOptionsInput & TpsOptionsInput = {}, agentColor?: string) {
   const claims: CapturedClaim[] = []
   const handlers = new Map<string, ((event: FakeEvent) => void)[]>()
   const generation: Generation = { active: 0 }
@@ -313,7 +315,10 @@ function createHarness(options: StatusOptionsInput & TpsOptionsInput = {}) {
         },
       },
       model: { list: () => state.models },
-      agent: { list: () => [] },
+      agent: {
+        list: () =>
+          agentColor ? [{ id: "test", mode: "primary", hidden: false, color: agentColor }] : [],
+      },
     },
   }
 
@@ -322,7 +327,12 @@ function createHarness(options: StatusOptionsInput & TpsOptionsInput = {}) {
     location: state.defaultLocation,
     app: { version: "test" },
     renderer: { widthMethod: "unicode" },
-    theme: { text: { muted: "#888888" }, border: { base: RGBA.fromHex("#ff8800") } },
+    theme: {
+      text: { muted: "#888888" },
+      border: { base: RGBA.fromHex("#ff8800") },
+      hue: { accent: { 200: RGBA.fromHex("#3388ff") } },
+      categorical: [{ 200: RGBA.fromHex("#e57837") }],
+    },
     storage: { memory: () => [generation, (mutation: (draft: Generation) => void) => mutation(generation)] as const },
     data,
     ui: {
@@ -1380,6 +1390,28 @@ describe("built render", () => {
 
     try {
       expect(app.captureCharFrame().trim()).toBe("")
+    } finally {
+      app.renderer.destroy()
+      h.cleanup()
+      h.restore()
+    }
+  })
+
+  test.each([
+    ["#12ab34", "#12ab34"],
+    ["accent", "#3388ff"],
+    ["custom", "#e57837"],
+  ] satisfies ReadonlyArray<readonly [string, string]>)("uses agent color %s for the block spinner", async (agentColor, expected) => {
+    const h = createHarness({ appearance: { spinner: "blocks" } }, agentColor)
+
+    seed(h, { status: "running" })
+
+    const app = await renderClaim(h, "composer", { sessionID: "ses_test" }, 60, 2)
+
+    try {
+      const spans = app.captureSpans().lines[0]?.spans ?? []
+
+      expect(spans.some((span) => span.text.includes("■") && span.fg.equals(RGBA.fromHex(expected)))).toBe(true)
     } finally {
       app.renderer.destroy()
       h.cleanup()
