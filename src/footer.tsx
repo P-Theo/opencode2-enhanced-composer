@@ -416,7 +416,6 @@ const definition: Plugin.Definition = {
       readonly sessionID: string
     }
 
-    /** Mirrors the host's `local.agent.color`, including its palette fallback. */
     function spinnerBaseColor(sessionID?: string): RGBA {
       const fallback: RGBA = context.theme.border.base
       const session = sessionID ? context.data.session.get(sessionID) : undefined
@@ -433,19 +432,19 @@ const definition: Plugin.Definition = {
 
       if (!agent) return fallback
 
+      const step = context.themeMode === "light" ? 800 : 200
+
       if (agent.color) {
-        const step = context.themeMode === "light" ? 800 : 200
+        if (/^#[0-9a-f]{6}$/iu.test(agent.color)) return RGBA.fromHex(agent.color)
 
-        // Hex from `cli.json`, or one of the config's theme color names.
-        const declared: RGBA | undefined = /^#[0-9a-f]{6}$/iu.test(agent.color)
-          ? RGBA.fromHex(agent.color)
-          : context.theme.hue?.[agent.color]?.[step]
+        if (agent.color === "accent" || agent.color === "interactive" || agent.color === "neutral") {
+          const declared = context.theme.hue?.[agent.color]?.[step]
 
-        if (declared) return declared
+          if (declared) return declared
+        }
       }
 
       const palette: RGBA[] = []
-      const step = context.themeMode === "light" ? 800 : 200
 
       for (const scale of context.theme.categorical ?? []) {
         const color: RGBA | undefined = scale?.[step]

@@ -6,7 +6,7 @@ const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.me
 
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
-const packages = ["@opencode/plugin"]
+const packages = ["@opencode/plugin", "@opencode/theme"]
 
 const versions = packages.map((name) => packageJson.devDependencies[name])
 

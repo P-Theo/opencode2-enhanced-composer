@@ -4,7 +4,7 @@ Maintainer runbook.
 
 A path entry loads the `tui.tsx` source through the host's transform; an installed package loads the pre-built `dist/tui.js` through the `exports` subpath. Those are two different code paths, so the bundle gets tested before it goes out.
 
-The pinned `@opencode/plugin` version is the build and test baseline. Move it in the same pull request as the fix or feature that needs it; CI validates the pin format and README compatibility floor, then checks GitHub for the matching official `anomalyco/opencode` release tag.
+The pinned `@opencode/plugin` version is the build and test baseline. Pin `@opencode/theme` to the same version so theme types remain available to TypeScript. Move both pins in the same pull request as the change that needs them. CI checks their parity and the README compatibility floor, then looks up the matching official `anomalyco/opencode` release tag.
 
 A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. A README change that matters on the package page needs a patch release to reach it, because npmjs.com only refreshes the rendered README when a new version is published.
 
