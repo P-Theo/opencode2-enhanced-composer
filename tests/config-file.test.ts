@@ -1,7 +1,9 @@
 // Persistence tests for `config-file.ts`. Every fixture lives in a fresh
 // temporary directory; no test reads or writes the developer's real `cli.json`.
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { renameSync, watch, writeFileSync } from "node:fs"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -385,6 +387,55 @@ describe("readCliConfig", () => {
     const result = await readCliConfig(path, identity(root))
 
     expect(result.status).toBe("invalid")
+  })
+
+  test("reads plugin entries containing coercion method names", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+
+    await writeFixture(path, `{ "plugins": [{ "package": "${PACKAGE_NAME}", "toString": null, "valueOf": null }] }`)
+
+    const snapshot = await readOk(path, root)
+
+    expect(snapshot.matches[0]?.specifier).toBe(PACKAGE_NAME)
+  })
+
+  test("rejects deeply nested, oversized and invalid UTF-8 settings", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+
+    await writeFixture(path, `{"nested":${"[".repeat(10_000)}0${"]".repeat(10_000)}}`)
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "invalid",
+      error: { message: "The CLI config is nested too deeply" },
+    })
+
+    await writeFile(path, " ".repeat(1024 * 1024 + 1))
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "error",
+      error: { message: "The CLI config exceeds 1 MiB" },
+    })
+
+    const invalid = Buffer.concat([Buffer.from('{"test":"'), Buffer.from([0xff]), Buffer.from('"}')])
+
+    await writeFile(path, invalid)
+    expect((await save(path, root, { kind: "create", specifier: PACKAGE_NAME }, [])).status).toBe("error")
+    expect(await readFile(path)).toEqual(invalid)
+  })
+
+  test("rejects non-regular files through a config symlink", async () => {
+    if (process.platform === "win32") return
+
+    const root = await fixture()
+    const path = join(root, "cli.json")
+    const fifo = join(root, "pipe")
+
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0)
+    await symlink(fifo, path)
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "error",
+      error: { message: "The CLI config must be a regular file" },
+    })
   })
 
   test("reads a file that starts with a byte-order mark", async () => {
@@ -1208,6 +1259,91 @@ describe("savePluginOptions", () => {
 
     expect(snapshot.document["theme"]).toEqual({ name: "catppuccin" })
     expect(snapshot.matches).toHaveLength(1)
+  })
+
+  test("refuses JSONC edits when decoded keys occur twice", async () => {
+    const root = await fixture()
+    const configPath = join(root, "cli.json")
+    const text = String.raw`{"plugins":[{"package":"${PACKAGE_NAME}","options":{"spinner":"blocks","\u0073pinner":"text"}}]}`
+
+    await writeFixture(configPath, text)
+
+    const result = await save(configPath, root, { kind: "existing", index: 0, specifier: PACKAGE_NAME }, [
+      change(["spinner"], "braille", "text"),
+    ])
+
+    expect(result).toMatchObject({ status: "invalid", error: { message: 'Duplicate property "spinner"', line: 1 } })
+    expect(await readFile(configPath, "utf8")).toBe(text)
+  })
+
+  test("rebases on an external edit arriving while the temporary file is written", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+    const initial = JSON.stringify({ plugins: [PACKAGE_NAME] })
+    const external = JSON.stringify({ plugins: [PACKAGE_NAME], mouse: false })
+
+    await writeFixture(path, initial)
+    let edited = false
+
+    const watcher = watch(root, (_, name) => {
+      if (edited || !name?.startsWith("cli.json.") || !name.endsWith(".tmp")) return
+      edited = true
+      writeFileSync(join(root, "external.json"), external)
+      renameSync(join(root, "external.json"), path)
+    })
+
+    try {
+      const result = await save(path, root, { kind: "existing", index: 0, specifier: PACKAGE_NAME }, [
+        change(["appearance", "spinner"], "blocks", undefined),
+      ])
+
+      expect(edited).toBe(true)
+      expect(result.status).toBe("saved")
+
+      const snapshot = await readOk(path, root)
+
+      expect(snapshot.document["mouse"]).toBe(false)
+      expect(snapshot.matches[0]?.options).toEqual({ appearance: { spinner: "blocks" } })
+      expect(await readdir(root)).toEqual(["cli.json"])
+    } finally {
+      watcher.close()
+    }
+  })
+
+  test("leaves both files intact when a config symlink is retargeted during save", async () => {
+    if (process.platform === "win32") return
+
+    const root = await fixture()
+    const path = join(root, "cli.json")
+    const oldTarget = join(root, "old.json")
+    const newTarget = join(root, "new.json")
+    const newLink = join(root, "new-link")
+    const original = JSON.stringify({ plugins: [PACKAGE_NAME] })
+
+    await writeFixture(oldTarget, original)
+    await writeFixture(newTarget, original)
+    await symlink(oldTarget, path)
+    await symlink(newTarget, newLink)
+    let retargeted = false
+
+    const watcher = watch(root, (_, name) => {
+      if (retargeted || !name?.startsWith("old.json.") || !name.endsWith(".tmp")) return
+      renameSync(newLink, path)
+      retargeted = true
+    })
+
+    try {
+      const result = await save(path, root, { kind: "existing", index: 0, specifier: PACKAGE_NAME }, [
+        change(["appearance", "spinner"], "blocks", undefined),
+      ])
+
+      expect(retargeted).toBe(true)
+      expect(result).toMatchObject({ status: "error", error: { message: expect.stringContaining("symlink target changed") } })
+      expect(await readFile(oldTarget, "utf8")).toBe(original)
+      expect(await readFile(newTarget, "utf8")).toBe(original)
+    } finally {
+      watcher.close()
+    }
   })
 
   test("writes through a dangling symlink and creates its target", async () => {

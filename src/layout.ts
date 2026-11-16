@@ -39,7 +39,7 @@
 // configuration contract — so this engine and the configuration can never
 // drift apart.
 
-import { resolveRenderLib } from "@opentui/core"
+import * as renderer from "@opentui/core"
 import type { RenderLib, WidthMethod } from "@opentui/core"
 import stringWidth from "string-width"
 import { METRIC_WIDGET_IDS, OVERFLOW_PRESETS } from "./options.js"
@@ -49,23 +49,8 @@ export type { MetricSeparator, PathCandidate, WidgetID } from "./options.js"
 
 export type { WidthMethod } from "@opentui/core"
 
-// The renderer lays out `<text>` through its native core: every TextBuffer is
-// created with the renderer's width method and measured by the same
-// `encodeUnicode` table walk (`RenderLib.encodeUnicode`, the call behind
-// `CliRenderer.widthMethod`, default "unicode"). The primary measurement IS
-// that native call, with the width method as a parameter: production passes
-// the live renderer's choice (`useRenderer().widthMethod` inside a slot
-// component), the preview passes its own renderer's, and tests pass the same
-// default. `resolveRenderLib` is public `@opentui/core` API, and the host's
-// runtime plugin support rewrites the bare specifier to the TUI's own copy,
-// so this measures with the exact tables the running renderer uses.
-//
-// Two fallbacks keep measurement total when the native core cannot load:
-// Bun's `stringWidth` (the installed core's own JS-side choice under Bun,
-// which agrees with the native table on all realistic content), then the
-// declared `string-width@7.2.0` — the exact package the installed core
-// bundles as its own JS fallback. Only the native path is exact for every
-// width method; the fallbacks approximate the default "unicode" method.
+// OpenTUI 0.8 moved the legacy Unicode encoder behind buffer ownership.
+// Its public stateless measurement uses the active width method for single-line text.
 
 /** The renderer's own default; `CliRenderer.widthMethod` reports the live choice. */
 const DEFAULT_WIDTH_METHOD: WidthMethod = "unicode"
@@ -128,7 +113,21 @@ function measureUncached(text: string, widthMethod: WidthMethod): number {
   return measureCellsPortable(text)
 }
 
-let nativeLib: RenderLib | undefined
+interface EncodedUnicode {
+  readonly data: readonly { readonly width: number }[]
+}
+
+interface LegacyWidthLibrary extends RenderLib {
+  encodeUnicode(text: string, method: WidthMethod): EncodedUnicode | null
+  freeUnicode(encoded: EncodedUnicode): void
+}
+
+function hasLegacyWidthLibrary(lib: RenderLib): lib is LegacyWidthLibrary {
+  return "encodeUnicode" in lib && lib.encodeUnicode instanceof Function &&
+    "freeUnicode" in lib && lib.freeUnicode instanceof Function
+}
+
+let nativeLib: LegacyWidthLibrary | undefined
 
 let nativeLibUnavailable = false
 
@@ -140,19 +139,22 @@ let nativeLibUnavailable = false
 function nativeStringWidth(text: string, widthMethod: WidthMethod): number | undefined {
   if (nativeLibUnavailable) return undefined
 
-  if (nativeLib === undefined) {
-    try {
-      nativeLib = resolveRenderLib()
-    } catch {
-      nativeLibUnavailable = true
-
-      return undefined
-    }
-  }
-
-  const lib = nativeLib
-
   try {
+    if (renderer.measureEditText instanceof Function) return renderer.measureEditText(text, { widthMethod })
+
+    if (nativeLib === undefined) {
+      const lib = renderer.resolveRenderLib()
+
+      if (!hasLegacyWidthLibrary(lib)) {
+        nativeLibUnavailable = true
+
+        return undefined
+      }
+
+      nativeLib = lib
+    }
+
+    const lib = nativeLib
     const encoded = lib.encodeUnicode(text, widthMethod)
 
     if (encoded === null) return undefined
@@ -189,11 +191,7 @@ const bunStringWidth = bunRuntime?.stringWidth
 /**
  * The last-resort measurement: the declared `string-width@7.2.0`, the exact
  * package the installed `@opentui/core` bundles as its own JS-side fallback.
- * Exported so its agreement with the native measurement stays tested. Known,
- * accepted divergence from the native table: it counts the emoji-presentation
- * BMP marks (© ™ ® and kin) as two cells where the native table counts them
- * one, and it skips a zero-width space the native walk mis-splits. Custom
- * text can include these characters; native measurement remains preferred.
+ * Some graphemes have different widths under the renderer's Unicode tables.
  */
 export function measureCellsPortable(text: string): number {
   return stringWidth(text)

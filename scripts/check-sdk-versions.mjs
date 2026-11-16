@@ -1,12 +1,10 @@
-// Verifies the OpenCode 2 compatibility pin in package.json and the floor
-// stated in the README. CI also audits the matching anomalyco/opencode Git tag.
 import { readFileSync } from "node:fs"
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
 
 const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8")
 
-const packages = ["@opencode/plugin", "@opencode/theme"]
+const packages = ["@opencode/plugin", "@opencode/theme", "@opencode/client"]
 
 const versions = packages.map((name) => packageJson.devDependencies[name])
 
@@ -41,4 +39,10 @@ if (compareVersions(floor, version) > 0) {
   throw new Error(`README floor ${floor} is newer than the pinned compatibility target ${version}`)
 }
 
-console.log(`OpenCode 2 compatibility target: ${version} (floor ${floor})`)
+const dev = packageJson.devDependencies
+
+if (dev["@opentui/core"] !== dev["@opentui/solid"] || !/^0\.\d+\.\d+$/u.test(dev["@opentui/core"])) {
+  throw new Error("OpenTUI core and Solid must use the same exact version")
+}
+
+console.log(process.argv.includes("--floor") ? floor : `OpenCode SDK ${version}, OpenTUI ${dev["@opentui/core"]}, documented floor ${floor}`)

@@ -74,6 +74,7 @@ interface OutputBlock {
 interface StepState {
   readonly assistantMessageID: string
   readonly startedAt: number
+  firstTokenAt: number | null
   streamedAt: number | null
   lastBoundaryAt: number | null
   observableBytes: number
@@ -187,6 +188,7 @@ export class TpsTracker {
     const step: StepState = {
       assistantMessageID,
       startedAt: now,
+      firstTokenAt: null,
       streamedAt: null,
       lastBoundaryAt: null,
       observableBytes: 0,
@@ -218,6 +220,12 @@ export class TpsTracker {
     if (!step) return
 
     if (!step.blocks.has(blockID)) step.blocks.set(blockID, { streamedBytes: 0, finalBytes: null })
+  }
+
+  markFirstToken(sessionID: string, assistantMessageID: string, now: number): void {
+    const step = this.ensureStep(sessionID, assistantMessageID, now)
+
+    if (step && step.firstTokenAt === null) step.firstTokenAt = now
   }
 
   push(
@@ -326,7 +334,7 @@ export class TpsTracker {
     // remains the fallback for hosts that do not publish it.
     const end = step.streamedAt ?? step.lastBoundaryAt
 
-    if (end !== null) st.settledDurationMs += Math.max(0, end - step.startedAt)
+    if (end !== null) st.settledDurationMs += Math.max(0, end - (step.firstTokenAt ?? step.startedAt))
     st.settledSteps.add(step.assistantMessageID)
     st.activeStep = null
   }

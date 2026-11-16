@@ -1499,6 +1499,10 @@ describe("save lifecycle", () => {
     const frame = dialog.frame()
 
     expect(frame).toContain("saving won't enable it")
+    await dialog.press("right")
+    await dialog.press("s")
+    expect(dialog.state.saves[0]?.target?.specifier).toBe(disabled.specifier)
+    expect(dialog.saved).toHaveLength(0)
 
     dialog.destroy()
   })
@@ -1553,6 +1557,24 @@ async function withInlineCliConfig(content: string | undefined, run: () => Promi
 }
 
 describe("openStatusSettings", () => {
+  test("the owning dialog can be dismissed without affecting another host", async () => {
+    await withConfigFixture(async () => {
+      const first = createFakeHost()
+      const second = createFakeHost()
+      const closeFirst = openStatusSettings(first.context)
+      const closeSecond = openStatusSettings(second.context)
+
+      expect(first.shows).toHaveLength(1)
+      expect(second.shows).toHaveLength(1)
+      closeFirst?.()
+      closeFirst?.()
+      expect(first.clearCount()).toBe(1)
+      expect(second.clearCount()).toBe(0)
+      closeSecond?.()
+      expect(second.clearCount()).toBe(1)
+    })
+  })
+
   test("treats an empty config directory as unset", async () => {
     const previous = process.env.OPENCODE_CONFIG_DIR
 

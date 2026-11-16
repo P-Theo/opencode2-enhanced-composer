@@ -208,8 +208,13 @@ export function formatBackgroundAgent(style: BackgroundAgentStyle, count: number
 /** The branch text: a glyph form, or the bare name for the colon style. */
 export function formatBranchName(branch: string, style: BranchStyle): string {
   const glyph = branchGlyph(style)
+  const name = singleLineLabel(branch)
 
-  return glyph === undefined ? branch : `${glyph} ${branch}`
+  return glyph === undefined ? name : `${glyph} ${name}`
+}
+
+function singleLineLabel(text: string): string {
+  return text.replace(/[\p{Cc}\p{Cs}\p{Zl}\p{Zp}]/gu, "�")
 }
 
 // Text (`format`), bar (`bar`), and label (`label`) are independent pieces
@@ -458,7 +463,8 @@ export function directoryCandidates(
   let previousWidth = Number.POSITIVE_INFINITY
 
   for (const path of paths) {
-    const text = decoration === undefined ? path : `${decoration} ${path}`
+    const label = singleLineLabel(path)
+    const text = decoration === undefined ? label : `${decoration} ${label}`
     const width = measure(text)
 
     if (width >= previousWidth) continue

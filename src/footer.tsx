@@ -225,17 +225,18 @@ function zoneWidgets(zone: readonly WidgetID[], widgets: FormattedStatusWidgets)
 const definition: Plugin.Definition = {
   id: "opencode2.enhanced-composer",
   setup(context) {
-    // Generation guard: the host may start a new generation of this plugin
-    // without disposing the previous one (observed on server (re)attach), and
-    // hot reload shares `storage.memory` across generations. Only the newest
-    // generation may render or run a spinner.
-    const [gen, setGen] = context.storage.memory("generation", { initial: { active: 0 } })
-    const mine = gen.active + 1
-
-    setGen((draft) => {
-      draft.active = mine
+    // Some host reattachments leave the previous activation running. Storage
+    // survives a module reload, including the old activation's cleanup.
+    const [gen, setGen] = context.storage.memory<{ active: number; dispose?: () => void }>("generation", {
+      initial: { active: 0 },
     })
-    const isActive = () => gen.active === mine
+
+    gen.dispose?.()
+    const mine = gen.active + 1
+    const cleanups: Array<() => void> = []
+    let disposed = false
+    let closeSettings: (() => void) | undefined
+    const isActive = () => !disposed && gen.active === mine
 
     const resolution = resolveStatusOptions(context.options)
 
@@ -261,6 +262,36 @@ const definition: Plugin.Definition = {
       if (timer === undefined) return
       clearInterval(timer)
       timer = undefined
+    }
+
+    function dispose(): void {
+      if (disposed) return
+      disposed = true
+      stopTimer()
+      seenEventIDs.clear()
+
+      if (gen.active === mine) {
+        setGen((draft) => {
+          draft.active += 1
+          delete draft.dispose
+        })
+      }
+
+      const errors: unknown[] = []
+
+      if (closeSettings !== undefined) cleanups.push(closeSettings)
+
+      for (const cleanup of cleanups.splice(0)) {
+        try {
+          cleanup()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+
+      closeSettings = undefined
+
+      if (errors.length > 0) throw new AggregateError(errors, "Could not dispose Enhanced Composer")
     }
 
     const flush = () => {
@@ -366,39 +397,51 @@ const definition: Plugin.Definition = {
       touch()
     }
 
-    const unsubs = [
-      context.data.on("session.execution.started", (e) => {
+    const subscribe: PluginContext["data"]["on"] = (type, handler) => {
+      const unsubscribe = context.data.on(type, handler)
+
+      cleanups.push(unsubscribe)
+
+      return unsubscribe
+    }
+
+    function subscribeEvents(): void {
+      subscribe("session.execution.started", (e) => {
         if (!isActive() || !isNewEvent(e)) return
         tracker.beginRun(e.data.sessionID)
         touch()
-      }),
-      context.data.on("session.text.delta", onDelta),
-      context.data.on("session.reasoning.delta", onDelta),
-      context.data.on("session.tool.input.delta", onDelta),
-      context.data.on("session.text.started", onBlockStarted),
-      context.data.on("session.reasoning.started", onBlockStarted),
-      context.data.on("session.tool.input.started", onBlockStarted),
-      context.data.on("session.text.ended", onBlockEnded),
-      context.data.on("session.reasoning.ended", onBlockEnded),
-      context.data.on("session.tool.input.ended", onBlockEnded),
-      context.data.on("session.step.started", onStepStarted),
-      context.data.on("session.step.streamed", onStepStreamed),
-      context.data.on("session.step.ended", onStepFinished),
-      context.data.on("session.step.failed", onStepFinished),
-      context.data.on("session.tool.called", onBackgroundActivity),
-      context.data.on("session.tool.success", onBackgroundActivity),
-      context.data.on("session.tool.failed", onBackgroundActivity),
-      context.data.on("session.tool.progress", onBackgroundActivity),
-      context.data.on("session.execution.succeeded", onFinish),
-      context.data.on("session.execution.failed", onFinish),
-      context.data.on("session.execution.interrupted", onFinish),
-      context.data.on("session.idle", onFinish),
-      context.data.on("session.deleted", (e) => {
+      })
+      subscribe("session.text.delta", onDelta)
+      subscribe("session.reasoning.delta", onDelta)
+      subscribe("session.tool.input.delta", onDelta)
+      subscribe("session.text.started", onBlockStarted)
+      subscribe("session.reasoning.started", onBlockStarted)
+      subscribe("session.tool.input.started", onBlockStarted)
+      subscribe("session.text.ended", onBlockEnded)
+      subscribe("session.reasoning.ended", onBlockEnded)
+      subscribe("session.tool.input.ended", onBlockEnded)
+      subscribe("session.step.started", onStepStarted)
+      subscribe("session.step.first-token", (e) => {
+        if (!isActive() || !isNewEvent(e)) return
+        tracker.markFirstToken(e.data.sessionID, e.data.assistantMessageID, e.created)
+      })
+      subscribe("session.step.streamed", onStepStreamed)
+      subscribe("session.step.ended", onStepFinished)
+      subscribe("session.step.failed", onStepFinished)
+      subscribe("session.tool.called", onBackgroundActivity)
+      subscribe("session.tool.success", onBackgroundActivity)
+      subscribe("session.tool.failed", onBackgroundActivity)
+      subscribe("session.tool.progress", onBackgroundActivity)
+      subscribe("session.execution.succeeded", onFinish)
+      subscribe("session.execution.failed", onFinish)
+      subscribe("session.execution.interrupted", onFinish)
+      subscribe("session.idle", onFinish)
+      subscribe("session.deleted", (e) => {
         if (!isActive() || !isNewEvent(e)) return
         tracker.evict(e.data.sessionID)
         touch()
-      }),
-    ]
+      })
+    }
 
     /**
      * The live renderer's width method — the one measurement the fit and the
@@ -627,9 +670,12 @@ const definition: Plugin.Definition = {
           enabled: isActive,
           run: () => {
             if (!isActive()) return
-            openStatusSettings(context, (saved) => {
+
+            const close = openStatusSettings(context, (saved) => {
               if (isActive()) applyStatusOptions(saved)
             })
+
+            if (close !== undefined) closeSettings = close
           },
         }],
       }))
@@ -637,33 +683,32 @@ const definition: Plugin.Definition = {
       return null
     }
 
-    const commandDispose = context.ui.slot({
-      append: "app",
-      render: () => <SettingsCommand />,
-    })
+    try {
+      subscribeEvents()
+      cleanups.push(context.ui.slot({ append: "app", render: () => <SettingsCommand /> }))
+      cleanups.push(context.ui.slot({
+        replace: "prompt.footer",
+        render: (input) => <PromptFooter sessionID={input.sessionID} />,
+      }))
+      cleanups.push(context.ui.slot({
+        append: "session.composer.top",
+        render: (input) => <ComposerTop sessionID={input.sessionID} />,
+      }))
+      setGen((draft) => {
+        draft.active = mine
+        draft.dispose = dispose
+      })
+    } catch (error) {
+      try {
+        dispose()
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Could not start Enhanced Composer")
+      }
 
-    const footerDispose = context.ui.slot({
-      replace: "prompt.footer",
-      render: (input) => <PromptFooter sessionID={input.sessionID} />,
-    })
-
-    const composerDispose = context.ui.slot({
-      append: "session.composer.top",
-      render: (input) => <ComposerTop sessionID={input.sessionID} />,
-    })
-
-    return () => {
-      for (const unsub of unsubs) unsub()
-      footerDispose()
-      composerDispose()
-      commandDispose()
-      stopTimer()
-
-      if (gen.active === mine)
-        setGen((draft) => {
-          draft.active = 0
-        })
+      throw error
     }
+
+    return dispose
   },
 }
 

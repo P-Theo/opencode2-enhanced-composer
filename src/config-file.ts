@@ -7,8 +7,7 @@
 // syntax, the comment handling, and the shape of an edit match the host
 // exactly instead of approximating it.
 //
-// What the target host (OpenCode v2.0.12, verified against its source and
-// documentation) does:
+// OpenCode's CLI config conventions:
 //
 //   * The file is `cli.json` inside a non-empty `$OPENCODE_CONFIG_DIR`,
 //     otherwise `opencode` under `$XDG_CONFIG_HOME`, otherwise
@@ -42,8 +41,8 @@
 
 import { applyEdits, modify, parseTree, printParseErrorCode, type FormattingOptions, type Node, type ParseError } from "jsonc-parser"
 import { randomUUID } from "node:crypto"
-import { realpathSync } from "node:fs"
-import { mkdir, open, readFile, readlink, realpath, rename, unlink } from "node:fs/promises"
+import { constants, realpathSync } from "node:fs"
+import { link, lstat, mkdir, open, readlink, realpath, rename, unlink } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -69,9 +68,9 @@ function isJsonObject(value: JsonValue): value is JsonObject {
   return isJsonContainer(value) && !isJsonArray(value)
 }
 
-/** JSON strings are the values that stringify to themselves. */
 function isJsonString(value: JsonValue): value is string {
-  return value === String(value)
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON members can shadow toString and valueOf.
+  return typeof value === "string"
 }
 
 /** Own-property writes must not trigger the `__proto__` setter on parsed data. */
@@ -340,6 +339,7 @@ export interface CliConfigError {
 
 export interface CliConfigSnapshot {
   readonly path: string
+  readonly target: string
   readonly exists: boolean
   readonly text: string
   readonly document: JsonObject
@@ -352,21 +352,48 @@ export type ReadCliConfigResult =
   | { readonly status: "invalid"; readonly path: string; readonly error: CliConfigError }
   | { readonly status: "error"; readonly path: string; readonly error: CliConfigError }
 
-type ConfigTextResult =
-  | { readonly status: "ok"; readonly text: string }
-  | { readonly status: "missing" }
-  | { readonly status: "error"; readonly error: CliConfigError }
+const MAX_CONFIG_BYTES = 1024 * 1024
 
-/** Read failures other than "no file yet" must not be mistaken for an empty config. */
-async function readConfigText(path: string): Promise<ConfigTextResult> {
+const MAX_CONFIG_DEPTH = 128
+
+async function readConfigText(path: string): Promise<string | undefined> {
   try {
-    const text = await readFile(path, "utf8")
+    if (!(await lstat(path)).isFile()) throw new Error("The CLI config must be a regular file")
 
-    return { status: "ok", text }
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+    const handle = await open(path, flags)
+
+    try {
+      const before = await handle.stat()
+
+      if (!before.isFile()) throw new Error("The CLI config must be a regular file")
+
+      if (before.size > MAX_CONFIG_BYTES) throw new Error("The CLI config exceeds 1 MiB")
+
+      const data = Buffer.alloc(before.size + 1)
+      let offset = 0
+
+      while (offset < data.length) {
+        const { bytesRead } = await handle.read(data, offset, data.length - offset, offset)
+
+        if (bytesRead === 0) break
+        offset += bytesRead
+      }
+
+      const after = await handle.stat()
+
+      if (offset !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+        throw new Error("The CLI config changed while reading it")
+      }
+
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data.subarray(0, offset))
+    } finally {
+      await handle.close()
+    }
   } catch (cause) {
-    if (isMissingFileError(cause)) return { status: "missing" }
+    if (isMissingFileError(cause)) return undefined
 
-    return { status: "error", error: { message: describeError(cause) } }
+    throw cause
   }
 }
 
@@ -376,22 +403,28 @@ function isMissingFileError(cause: unknown): boolean {
   if (!("code" in cause)) return false
   const code = cause.code
 
-  return code === "ENOENT" || code === "ENOTDIR"
+  return code === "ENOENT"
 }
 
 export async function readCliConfig(path: string, identity: PluginIdentity): Promise<ReadCliConfigResult> {
-  const read = await readConfigText(path)
+  let target: string
+  let text: string | undefined
 
-  if (read.status === "error") return { status: "error", path, error: read.error }
+  try {
+    target = await resolveWriteTarget(path)
+    text = await readConfigText(target)
+  } catch (cause) {
+    return { status: "error", path, error: { message: describeError(cause) } }
+  }
 
-  if (read.status === "missing") {
+  if (text === undefined) {
     return {
       status: "ok",
-      snapshot: { path, exists: false, text: "", document: {}, plugins: [], matches: [] },
+      snapshot: { path, target, exists: false, text: "", document: {}, plugins: [], matches: [] },
     }
   }
 
-  const parsed = parseJsoncDocument(read.text)
+  const parsed = parseJsoncDocument(text)
 
   if (!parsed.ok) return { status: "invalid", path, error: parsed.error }
   const decoded = decodeConfigDocument(parsed.value)
@@ -406,7 +439,7 @@ export async function readCliConfig(path: string, identity: PluginIdentity): Pro
 
   return {
     status: "ok",
-    snapshot: { path, exists: true, text: read.text, document: decoded.config.document, plugins: decoded.config.plugins, matches },
+    snapshot: { path, target, exists: true, text, document: decoded.config.document, plugins: decoded.config.plugins, matches },
   }
 }
 
@@ -469,10 +502,19 @@ type JsoncDocumentResult =
   | { readonly ok: false; readonly error: CliConfigError }
 
 /** Parse one config document; the first parse error wins, with its position. */
-function parseJsoncDocument(text: string): JsoncDocumentResult {
+function parseJsoncDocument(text: string, allowDuplicateKeys = false): JsoncDocumentResult {
   const { body, bom } = splitBom(text)
   const errors: ParseError[] = []
-  const root = parseTree(body, errors, { allowTrailingComma: true })
+  let root: Node | undefined
+
+  try {
+    root = parseTree(body, errors, { allowTrailingComma: true })
+  } catch (cause) {
+    if (cause instanceof RangeError) return invalidConfig("The CLI config is nested too deeply")
+
+    throw cause
+  }
+
   const first = errors[0]
 
   if (first !== undefined) {
@@ -485,13 +527,46 @@ function parseJsoncDocument(text: string): JsoncDocumentResult {
 
   if (root === undefined) return { ok: false, error: { message: "The CLI config is empty" } }
 
+  const invalid = validateConfigTree(root, 0, allowDuplicateKeys)
+
+  if (invalid !== undefined) {
+    const position = positionAt(text, invalid.offset + (bom ? BOM.length : 0))
+
+    return { ok: false, error: { message: invalid.message, ...position } }
+  }
+
   return { ok: true, value: extractNodeValue(root) }
+}
+
+function validateConfigTree(node: Node, depth: number, allowDuplicateKeys: boolean): { offset: number; message: string } | undefined {
+  if (node.type !== "object" && node.type !== "array") return undefined
+
+  if (depth >= MAX_CONFIG_DEPTH) return { offset: node.offset, message: "The CLI config is nested too deeply" }
+
+  const keys = new Set<string>()
+
+  for (const child of node.children ?? []) {
+    if (!allowDuplicateKeys && child.type === "property") {
+      const key = String(child.children?.[0]?.value)
+
+      // JSONC edits address the first occurrence while decoding uses the last.
+      if (keys.has(key)) return { offset: child.offset, message: `Duplicate property ${JSON.stringify(key)}` }
+      keys.add(key)
+    }
+
+    const value = child.type === "property" ? child.children?.[1] : child
+    const invalid = value && validateConfigTree(value, depth + 1, allowDuplicateKeys)
+
+    if (invalid !== undefined) return invalid
+  }
+
+  return undefined
 }
 
 function parseInlineCliConfig(content: string | undefined): JsonObject | undefined {
   if (content === undefined || content.trim() === "" || content.startsWith(BOM)) return undefined
 
-  const parsed = parseJsoncDocument(content)
+  const parsed = parseJsoncDocument(content, true)
 
   return parsed.ok && isJsonObject(parsed.value) ? parsed.value : undefined
 }
@@ -751,14 +826,14 @@ function serializeConfigSave<Result>(operation: () => Promise<Result>): Promise<
 }
 
 function isSafeOptionPath(path: readonly string[]): boolean {
-  return path.every((key) => key.length > 0 && !UNSAFE_KEYS.has(key))
+  return path.length <= MAX_CONFIG_DEPTH / 2 && path.every((key) => key.length > 0 && !UNSAFE_KEYS.has(key))
 }
 
 export function savePluginOptions(input: SavePluginOptionsInput): Promise<SavePluginOptionsResult> {
   return serializeConfigSave(() => savePluginOptionsNow(input))
 }
 
-async function savePluginOptionsNow(input: SavePluginOptionsInput): Promise<SavePluginOptionsResult> {
+async function savePluginOptionsNow(input: SavePluginOptionsInput, retries = 2): Promise<SavePluginOptionsResult> {
   const path = input.path
 
   if (input.selection.specifier.length === 0) {
@@ -841,13 +916,15 @@ async function savePluginOptionsNow(input: SavePluginOptionsInput): Promise<Save
     return { status: "error", path, error: { message: describeError(cause) } }
   }
 
-  const verifyError = verifySavedText(nextText, resolved.index, finalOptions)
+  const verifyError = verifySavedText(nextText, resolved, finalOptions)
 
   if (verifyError !== null) return { status: "error", path, error: verifyError }
 
-  const writeError = await writeConfigText(path, nextText)
+  const write = await writeConfigText(snapshot, nextText)
 
-  if (writeError !== null) return { status: "error", path, error: writeError }
+  if (write.status === "changed" && retries > 0) return savePluginOptionsNow(input, retries - 1)
+
+  if (write.status !== "saved") return { status: "error", path, error: { message: write.message } }
 
   return {
     status: "saved",
@@ -915,7 +992,7 @@ function walkOptionPath(options: JsonObject, path: readonly string[]): OptionPat
 
   for (const key of path) {
     if (!isJsonObject(cursor)) return { kind: "blocked", value: cursor }
-    const next: JsonValue | undefined = cursor[key]
+    const next: JsonValue | undefined = Object.hasOwn(cursor, key) ? cursor[key] : undefined
 
     if (next === undefined) return { kind: "leaf", value: undefined }
     cursor = next
@@ -938,7 +1015,7 @@ function setJsonPath(options: JsonObject, path: readonly string[], value: JsonVa
     const key = path[index]
 
     if (key === undefined) return clone
-    const existing = cursor[key]
+    const existing = Object.hasOwn(cursor, key) ? cursor[key] : undefined
 
     // A write replaces a non-object on the way down; a deletion stops when an
     // ancestor is absent or is not an object — there is nothing to remove.
@@ -985,17 +1062,17 @@ function buildEntryObject(specifier: string, options: JsonObject) {
   return { package: specifier, options }
 }
 
-function verifySavedText(text: string, index: number, options: JsonObject): CliConfigError | null {
+function verifySavedText(text: string, selection: ResolvedSelection, options: JsonObject): CliConfigError | null {
   const parsed = parseJsoncDocument(text)
 
   if (!parsed.ok) return { message: `The edited configuration did not parse: ${parsed.error.message}` }
   const decoded = decodeConfigDocument(parsed.value)
 
   if (!decoded.ok) return decoded.error
-  const entry = decoded.config.plugins[index]
+  const entry = decoded.config.plugins[selection.index]
   const parsedEntry = entry === undefined ? null : readPluginEntry(entry)
 
-  if (parsedEntry === null || !deepEqualJson(parsedEntry.options, options)) {
+  if (parsedEntry?.specifier !== selection.specifier || !deepEqualJson(parsedEntry.options, options)) {
     return { message: "The edited configuration did not read back as written" }
   }
 
@@ -1004,18 +1081,27 @@ function verifySavedText(text: string, index: number, options: JsonObject): CliC
 
 /** Follow the file's symlink chain so the rename never replaces the link. */
 async function resolveWriteTarget(path: string, depth = 0): Promise<string> {
-  if (depth > 8) return path
-  const direct = await realpath(path).catch(() => undefined)
+  if (depth > 40) throw new Error("Could not resolve the CLI config path")
 
-  if (direct !== undefined) return direct
-  const link = await readlink(path).catch(() => undefined)
+  try {
+    return await realpath(path)
+  } catch (cause) {
+    if (!isMissingFileError(cause)) throw cause
+  }
 
-  if (link !== undefined) return resolveWriteTarget(resolve(dirname(path), link), depth + 1)
-  const parent = await realpath(dirname(path)).catch(() => undefined)
+  try {
+    if ((await lstat(path)).isSymbolicLink()) {
+      const destination = await readlink(path)
 
-  if (parent !== undefined) return join(parent, basename(path))
+      return resolveWriteTarget(resolve(dirname(path), destination), depth + 1)
+    }
+  } catch (cause) {
+    if (!isMissingFileError(cause)) throw cause
+  }
 
-  return path
+  const parent = dirname(resolve(path))
+
+  return join(await resolveWriteTarget(parent, depth + 1), basename(path))
 }
 
 const TEMPORARY_FILE_ATTEMPTS = 3
@@ -1036,6 +1122,7 @@ async function writeTemporaryConfig(target: string, text: string): Promise<strin
 
       try {
         await handle.writeFile(ensureTrailingNewline(text))
+        await handle.sync()
       } finally {
         await handle.close()
       }
@@ -1053,20 +1140,44 @@ async function writeTemporaryConfig(target: string, text: string): Promise<strin
   throw new Error("Could not create a unique temporary configuration file")
 }
 
-async function writeConfigText(path: string, text: string): Promise<CliConfigError | null> {
-  const target = await resolveWriteTarget(path)
+type ConfigWriteResult =
+  | { readonly status: "saved" }
+  | { readonly status: "changed" | "error"; readonly message: string }
+
+async function writeConfigText(snapshot: CliConfigSnapshot, text: string): Promise<ConfigWriteResult> {
+  const { target, path } = snapshot
   let temporary: string | undefined
 
   try {
+    if (Buffer.byteLength(ensureTrailingNewline(text)) > MAX_CONFIG_BYTES) {
+      return { status: "error", message: "The edited CLI config exceeds 1 MiB" }
+    }
+
     await mkdir(dirname(target), { recursive: true })
     temporary = await writeTemporaryConfig(target, text)
-    await rename(temporary, target)
 
-    return null
+    if (await resolveWriteTarget(path) !== target) {
+      return { status: "error", message: "The CLI config symlink target changed while saving. Reopen the editor and try again." }
+    }
+
+    const current = await readConfigText(target)
+
+    if (current !== (snapshot.exists ? snapshot.text : undefined)) {
+      return { status: "changed", message: "The CLI config kept changing while saving. Try again." }
+    }
+
+    if (snapshot.exists) await rename(temporary, target)
+    else await link(temporary, target)
+
+    return { status: "saved" }
   } catch (cause) {
-    if (temporary !== undefined) await unlink(temporary).catch(() => undefined)
+    if (!snapshot.exists && isAlreadyExists(cause)) {
+      return { status: "changed", message: "The CLI config was created while saving. Try again." }
+    }
 
-    return { message: describeError(cause) }
+    return { status: "error", message: describeError(cause) }
+  } finally {
+    if (temporary !== undefined) await unlink(temporary).catch(() => undefined)
   }
 }
 

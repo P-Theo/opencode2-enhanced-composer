@@ -33,7 +33,7 @@ function assistantMessage(id: string, tokens: TokenUsageInfo, model: ModelRef = 
 }
 
 function compactionMessage(id: string): SessionMessageInfo {
-  return { id, time: { created: 0 }, type: "compaction", status: "completed", reason: "auto", summary: "", recent: "" }
+  return { id, time: { created: 0 }, type: "compaction", status: "completed", reason: "auto", summary: "" }
 }
 
 describe("contextUsage", () => {
@@ -353,6 +353,8 @@ function createHarness(options: StatusOptionsInput & TpsOptionsInput = {}, agent
     claims,
     state,
     timer,
+    context,
+    handlers,
     subscribed: (type: string) => handlers.has(type),
     emit: (type: string, data_: FakeEvent["data"], created = Date.now(), id = `evt_${eventID++}`) => {
       for (const handler of handlers.get(type) ?? []) handler({ id, type, created, data: data_ })
@@ -457,6 +459,7 @@ describe("plugin setup", () => {
       "session.reasoning.delta",
       "session.tool.input.delta",
       "session.step.started",
+      "session.step.first-token",
       "session.step.streamed",
       "session.step.ended",
       "session.execution.succeeded",
@@ -474,6 +477,70 @@ describe("plugin setup", () => {
     h.cleanup()
     expect(h.timer.cleared).toBe(1)
     h.restore()
+  })
+
+  test("disposes a superseded generation and leaves later subscriptions active", () => {
+    const h = createHarness()
+
+    const start = () => {
+      const cleanup = setupWithFakeContext(h.context)
+
+      if (!(cleanup instanceof Function)) throw new Error("Missing plugin cleanup")
+
+      return cleanup
+    }
+
+    try {
+      const original = h.handlers.get("session.execution.started")?.[0]
+
+      if (original === undefined) throw new Error("Missing execution handler")
+      h.emit("session.execution.started", { sessionID: "ses_test" })
+      expect(h.timer.created).toBe(1)
+
+      const second = start()
+
+      expect(h.timer.cleared).toBe(1)
+      expect(h.handlers.get("session.execution.started")).toHaveLength(1)
+      second()
+      const third = start()
+
+      try {
+        h.cleanup()
+        original({ id: "old", type: "session.execution.started", created: 1, data: { sessionID: "ses_test" } })
+        expect(h.timer.created).toBe(1)
+        h.emit("session.execution.started", { sessionID: "ses_test" })
+        expect(h.timer.created).toBe(2)
+      } finally {
+        third()
+      }
+    } finally {
+      h.cleanup()
+      h.restore()
+    }
+  })
+
+  test("releases subscriptions and earlier slot registrations when setup fails", () => {
+    const h = createHarness()
+    let registered = 0
+
+    try {
+      expect(() => setupWithFakeContext({
+        ...h.context,
+        ui: {
+          slot: (claim) => {
+            if (claim.replace === "prompt.footer") throw new Error("cannot register footer")
+            registered += 1
+
+            return () => { registered -= 1 }
+          },
+        },
+      })).toThrow("cannot register footer")
+      expect(registered).toBe(0)
+      expect(h.handlers.size).toBe(0)
+    } finally {
+      h.cleanup()
+      h.restore()
+    }
   })
 
   test("honours the refreshHz option for the throttle timer", () => {

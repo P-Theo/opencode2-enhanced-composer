@@ -16,7 +16,9 @@ Configure it from the in-TUI **Customize footer** editor (`/customize-footer`) o
 
 ## Install
 
-The minimum supported OpenCode 2 version is `2.0.11`. Install it with the CLI's plugin command, which adds the entry to `cli.json` for you:
+The minimum supported OpenCode 2 version is `2.0.11`. The published package path is tested in the official Linux TUI on 2.0.11, 2.2.0, 2.2.3, and 2.3.0. See [Development](docs/DEVELOPMENT.md#packaging-and-compatibility) for what each check covers.
+
+Install with the CLI's plugin command, which adds the entry to `cli.json` for you.
 
 ```sh
 opencode plugin add opencode2-enhanced-composer
@@ -30,11 +32,13 @@ Or add the package to `cli.json` yourself:
 }
 ```
 
-OpenCode 2 installs the package into its own cache and reuses the newest cached generation, so a restart alone may not pick up a new release. Delete the package's cache directory and restart to upgrade:
+OpenCode reuses the newest cached generation for the configured package specifier. To install a newer release, update the plugin and restart the TUI.
 
 ```sh
-rm -rf ~/.cache/opencode/npm/opencode2-enhanced-composer@latest
+opencode plugin update opencode2-enhanced-composer
 ```
+
+Pass the configured specifier to the update command if you use a tag or a version range. To move an exact version pin, edit the version in `cli.json`.
 
 ## Run from source
 
