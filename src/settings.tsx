@@ -571,11 +571,12 @@ export function StatusSettingsDialog(props: StatusSettingsDialogProps): JSX.Elem
   const performSave = async (force: boolean): Promise<void> => {
     if (savePhase().status === "saving") return
     const state = draft()
+    const selected = target()
 
     setSavePhase({ status: "saving" })
 
     const result = await props.store.save({
-      target: target(),
+      target: selected,
       changed: [...state.changed],
       patch: draftPatch(state),
       force,
@@ -586,7 +587,7 @@ export function StatusSettingsDialog(props: StatusSettingsDialogProps): JSX.Elem
       // even when the host closed the dialog mid-save; its callback is
       // generation-guarded. Only the dialog's own state (closing, panels)
       // stops at disposal.
-      props.onSaved?.(result.options)
+      if (selected?.enabled !== false) props.onSaved?.(result.options)
 
       if (!disposed) props.requestClose()
 
@@ -1869,7 +1870,7 @@ function BodyRow(props: BodyRowProps): JSX.Element {
   )
 }
 
-let activeDialog: (() => void) | undefined
+const activeDialogs = new WeakMap<Plugin.Context["ui"]["dialog"], () => void>()
 
 /**
  * Opens the settings editor in the host's dialog. The optional `onSaved`
@@ -1880,13 +1881,15 @@ let activeDialog: (() => void) | undefined
 export function openStatusSettings(
   context: Plugin.Context,
   onSaved?: (options: NormalizedStatusOptions) => void,
-): void {
-  if (activeDialog !== undefined) return
+): (() => void) | undefined {
+  const dialog = context.ui.dialog
+
+  if (activeDialogs.has(dialog)) return
 
   const environment = currentCliConfigEnvironment()
 
   if (hasInlineCliPluginsConfig(process.env.OPENCODE_CLI_CONFIG_CONTENT)) {
-    void context.ui.dialog.alert({
+    void dialog.alert({
       title: "Customize footer unavailable",
       message:
         "OpenCode is using OPENCODE_CLI_CONFIG_CONTENT to override plugins. Update or unset that environment variable, then restart OpenCode before customizing the footer.",
@@ -1908,23 +1911,28 @@ export function openStatusSettings(
     // session still owns may touch the host's active dialog afterwards.
     session.open = false
 
-    if (activeDialog === release) activeDialog = undefined
+    if (activeDialogs.get(dialog) === release) activeDialogs.delete(dialog)
   }
 
   const requestClose = (): void => {
-    if (!session.open || activeDialog !== release) return
-    session.open = false
-    activeDialog = undefined
-    context.ui.dialog.clear()
+    if (!session.open || activeDialogs.get(dialog) !== release) return
+    release()
+    dialog.clear()
   }
 
-  activeDialog = release
-  context.ui.dialog.show(
-    () => <StatusSettingsDialog context={context} store={store} fallback={fallback} onSaved={onSaved} requestClose={requestClose} />,
-    release,
-  )
-  // The host applies its own default presentation when it shows a dialog, so
-  // the requested size goes in after the show (the mounted editor also
-  // reclaims it).
-  context.ui.dialog.set({ size: "xlarge", centered: true })
+  activeDialogs.set(dialog, release)
+
+  try {
+    dialog.show(
+      () => <StatusSettingsDialog context={context} store={store} fallback={fallback} onSaved={onSaved} requestClose={requestClose} />,
+      release,
+    )
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  dialog.set({ size: "xlarge", centered: true })
+
+  return requestClose
 }

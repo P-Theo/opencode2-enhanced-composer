@@ -4,57 +4,76 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '23 5 * * 1'
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - name: Audit the production lockfile
+        run: npm audit --package-lock-only --omit=dev --audit-level=low
+      - name: Audit the full lockfile
+        if: ${{ !cancelled() }}
+        run: npm audit --package-lock-only --include=dev --audit-level=low
 
-      # 26.4.0 is @opentui/core's Node floor; the non-Bun toolchain runs on it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  check:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.4.0
           cache: npm
-
-      # tsc, oxlint and scripts/build.mjs run on node; the test script is `bun test`.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.12
+          bun-version: 1.4.4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
 
-      - run: npm ci --ignore-scripts
-
-      # The published package ships only jsonc-parser and string-width; gate on
-      # the production tree alone, where registry advisories are actionable.
-      - run: npm audit --omit=dev --audit-level=low
-
-      - run: npm run check:compatibility
-
-      - name: Verify the official OpenCode 2 release tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(node -p 'require("./package.json").devDependencies["@opencode/plugin"]')
-          gh api "repos/anomalyco/opencode/git/ref/tags/v${version}" --silent
-
+      - run: npm ci --ignore-scripts --no-audit
+      - run: npm run check:metadata
       - run: npm run lint
       - run: npm run check
       - run: npm test
       - run: npm run build
 
-      # dist/ is gitignored, so this also proves a clean clone produces a package
-      # whose bundled entrypoint works with OpenCode 2.0.12's TUI runtime versions.
-      # Its catalog resolves Solid 1.9.15, while OpenTUI's npm peer still names 1.9.12.
-      - name: Verify the packed artifact with OpenCode 2.0.12 runtime versions
+      - name: Pack the publishable files
+        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+      - name: Install the terminal test dependencies
         run: |
-          mkdir -p "$RUNNER_TEMP/enhanced-composer-pack" "$RUNNER_TEMP/enhanced-composer-install"
-          npm pack --pack-destination "$RUNNER_TEMP/enhanced-composer-pack"
-          npm install --ignore-scripts --legacy-peer-deps --prefix "$RUNNER_TEMP/enhanced-composer-install" \
-            "$RUNNER_TEMP"/enhanced-composer-pack/opencode2-enhanced-composer-*.tgz \
-            "@opentui/core@0.5.10" \
-            "@opentui/solid@0.5.10" \
-            "solid-js@1.9.15"
-          (cd "$RUNNER_TEMP/enhanced-composer-install" && node --input-type=module -e 'await import("opencode2-enhanced-composer/tui")')
+          python -m pip install --only-binary=:all: --require-hashes -r scripts/runtime-test-requirements.txt
+      - name: Test official OpenCode runtimes
+        run: |
+          pack=("$RUNNER_TEMP"/opencode2-enhanced-composer-*.tgz)
+          floor=$(node scripts/check-sdk-versions.mjs --floor)
+          current=$(node -p 'require("./package.json").devDependencies["@opencode/plugin"]')
+          python scripts/check-opencode.py "$floor" "${pack[0]}"
+          python scripts/check-opencode.py 2.2.0 "${pack[0]}"
+          python scripts/check-opencode.py 2.2.3 "${pack[0]}"
+          python scripts/check-opencode.py "$current" "${pack[0]}" --source "$PWD" --background

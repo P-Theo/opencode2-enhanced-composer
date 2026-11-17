@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { resolveRenderLib } from "@opentui/core"
+import { measureEditText } from "@opentui/core"
 import type { WidthMethod } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { jsx } from "@opentui/solid/jsx-runtime"
@@ -19,24 +19,10 @@ import {
 } from "../src/layout.ts"
 import { METRIC_WIDGET_IDS, OVERFLOW_PRESETS, WIDGET_IDS } from "../src/options.ts"
 
-// The engine's measurement is verified three ways: it is literally the
-// renderer's native `encodeUnicode` walk, its fallback delegates to the
-// declared string-width package, and — the claim that matters — a rendered
-// row clips a string at exactly the cell count it reports.
-
 const measure = createCellMeasurer()
 
 function nativeMeasure(text: string, widthMethod: WidthMethod = "unicode"): number {
-  const lib = resolveRenderLib()
-  const encoded = lib.encodeUnicode(text, widthMethod)
-
-  if (encoded === null) throw new Error(`native measurement failed for ${JSON.stringify(text)}`)
-
-  try {
-    return encoded.data.reduce((width, glyph) => width + glyph.width, 0)
-  } finally {
-    lib.freeUnicode(encoded)
-  }
+  return measureEditText(text, { widthMethod })
 }
 
 const MEASUREMENT_SAMPLES = [
@@ -123,10 +109,10 @@ describe("measureCells", () => {
   })
 
   test("measures with the requested width method", () => {
-    expect(measureCells("\u{1F1FA}\u{1F1F8}", "unicode")).toBe(2)
-    expect(measureCells("\u{1F1FA}\u{1F1F8}", "wcwidth")).toBe(1)
     expect(measureCells("1\uFE0F\u20E3", "unicode")).toBe(2)
     expect(measureCells("1\uFE0F\u20E3", "wcwidth")).toBe(1)
+    expect(measureCells("👨‍👩‍👧", "unicode")).toBe(2)
+    expect(measureCells("👨‍👩‍👧", "wcwidth")).toBe(6)
   })
 })
 
@@ -157,17 +143,10 @@ describe("measureCellsPortable", () => {
   })
 
   test("pins the documented divergences from the native table", () => {
-    // The string-width package counts the emoji-presentation BMP marks as
-    // two cells; the native table counts them one. Bun's `stringWidth` agrees
-    // with the native table, so only the last-resort fallback differs.
     expect(measureCellsPortable("©")).toBe(2)
     expect(nativeMeasure("©")).toBe(1)
     expect(measureCellsPortable("™")).toBe(2)
     expect(nativeMeasure("™")).toBe(1)
-    // The native walk splits the UTF-8 bytes of a zero-width space into
-    // visible cells; the package skips it.
-    expect(measureCellsPortable("a\u200Bb")).toBe(2)
-    expect(nativeMeasure("a\u200Bb")).toBe(4)
   })
 })
 

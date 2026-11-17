@@ -32,11 +32,11 @@ The session counters come from OpenCode's cumulative session token and cost fiel
 | `cost` | Cumulative session cost in USD. |
 | `context` | The latest assistant usage after the latest completed compaction and before the session's revert boundary. Percentage and bars require a known model context limit. |
 | `tps` | A live token-throughput estimate while output is observable, held across tool execution and between steps, then the frozen average for the completed run. It appears only once a rate exists. |
-| `bgagent` | The number of running direct subagents of the session; it hides when the count is zero. |
+| `bgagent` | The number of running direct subagents of the session. On OpenCode 2.3 this includes children that continue after the parent becomes idle. The widget hides at zero. |
 
-> **Spinner color compatibility:** OpenCode 2.0.15 exposes only `accent`, `interactive`, and `neutral` hues in its public theme types. The spinner uses those hues or a hex agent color directly and falls back to the theme's categorical palette for other named colors. On older OpenCode 2 versions, the spinner color may not match the agent's color. Animation is unaffected.
+The spinner takes a hex agent color directly or looks up `accent`, `interactive`, or `neutral` in the active theme. When that color is unavailable it uses the theme's categorical palette and then the border color.
 
-While a run streams, TPS (tokens per second) is estimated from observed UTF-8 bytes using `bytesPerToken`. When the model stream ends, the last live estimate is held across tool execution and between steps; new observable output resumes the live estimate. Once a step reports its output and reasoning usage, those exact tokens replace that step's estimate, and at run end the cumulative average stays frozen until the next prompt. The label always reads `~N t/s`, so TPS has no appearance setting. The tracker shares its lineage with the standalone [opencode2-tps](https://github.com/P-Theo/opencode2-tps) plugin, minus its `display` option, but the held running display and its refresh behavior differ. See [TPS rate tuning](#tps-rate-tuning) for `refreshHz` and `bytesPerToken`.
+While a run streams, TPS (tokens per second) is estimated from observed UTF-8 bytes using `bytesPerToken`. When the model stream ends, the last live estimate holds across tool execution and between steps. New observable output resumes the live estimate. Reported output and reasoning tokens replace each step's estimate for the final average, which stays frozen until the next prompt. OpenCode 2.3 supplies the first-token timestamp, so the final average excludes the wait before the first token. Older hosts use the step start. The label always reads `~N t/s`. See [TPS rate tuning](#tps-rate-tuning) for `refreshHz` and `bytesPerToken`.
 
 ## Appearance options
 
@@ -110,5 +110,9 @@ Settings go in this plugin's `options` object. For example, this changes only th
 ```
 
 Use [options.schema.json](../options.schema.json) when editing by hand. The schema lists the same enums, defaults, ranges, and custom text forms described here.
+
+OpenCode reads `cli.json` from `$OPENCODE_CONFIG_DIR`, `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`, in that order. An inline `plugins` array in `OPENCODE_CLI_CONFIG_CONTENT` can take precedence, so the editor disables disk saves when it finds that override.
+
+The editor preserves comments and unrelated settings. It reports conflicts on edited fields, retries when it detects a concurrent disk change, and preserves symlinks to regular files. It refuses writes for malformed JSONC, duplicate object keys, invalid UTF-8, files above 1 MiB, and more than 128 nested containers. External writers can still race the final rename because they run independently of the editor.
 
 Invalid sections and appearance values are normalized to defaults. Invalid or duplicate widget IDs are dropped, keeping the first occurrence in layout order. Unknown top-level options are preserved for future versions.

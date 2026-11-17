@@ -163,6 +163,19 @@ describe("TpsTracker", () => {
     expect(tracker.value("s", 11_000)?.tps).toBeCloseTo(20 / 1.5)
   })
 
+  test("excludes provider wait before OpenCode 2.3's first-token event", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginRun("s")
+    tracker.beginStep("s", "m", 1000)
+    tracker.markFirstToken("s", "m", 4500)
+    tracker.markStreamed("s", "m", 5000)
+    tracker.finishStep("s", "m", 20, 7000)
+    tracker.finish("s", 8000)
+
+    expect(tracker.value("s", 8000)).toMatchObject({ tps: 40, tokens: 20, frozen: true, tokensEstimated: false })
+  })
+
   test("falls back to the last content boundary without a streamed event", () => {
     const tracker = new TpsTracker()
 

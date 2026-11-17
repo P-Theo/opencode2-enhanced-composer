@@ -1,119 +1,46 @@
 # Release
 
-Maintainer runbook.
+Use the [development checks](DEVELOPMENT.md) with the release commit. The tarball contains `dist/`, `options.schema.json`, `package.json`, `README.md`, and `LICENSE`. OpenCode loads `dist/tui.js` through the `./tui` export.
 
-A path entry loads the `tui.tsx` source through the host's transform; an installed package loads the pre-built `dist/tui.js` through the `exports` subpath. Those are two different code paths, so the bundle gets tested before it goes out.
+## 1. Prepare and test the release
 
-The pinned `@opencode/plugin` version is the build and test baseline. Pin `@opencode/theme` to the same version so theme types remain available to TypeScript. Move both pins in the same pull request as the change that needs them. CI checks their parity and the README compatibility floor, then looks up the matching official `anomalyco/opencode` release tag.
-
-A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. A README change that matters on the package page needs a patch release to reach it, because npmjs.com only refreshes the rendered README when a new version is published.
-
-## 1. Build the tarball
-
-`npm pack` runs lint, check, test and build through `prepack`.
+Open a release pull request with the version bump. Use a prerelease version such as `0.1.1-rc.1` for the `next` dist-tag. After approval and merge, tag the release commit `v<version>` and build the artifact from that commit.
 
 ```sh
-npm pack --pack-destination /tmp
+pack_dir=$(mktemp -d)
+npm pack --pack-destination "$pack_dir"
 ```
 
-The tarball holds `dist/`, `options.schema.json`, `package.json`, `README.md` and `LICENSE`. The host entry point is `exports["./tui"]`.
+Run the OpenCode compatibility checks against that tarball. The harness uses an isolated XDG cache and switches between official OpenCode runtimes. It stages the tarball in the latest generation of `opencode/npm/opencode2-enhanced-composer@latest/` inside that cache, then exercises the same package export the registry install uses. Run it against the oldest supported and newest stable hosts when preparing a release. [Runtime check instructions](DEVELOPMENT.md#packaging-and-compatibility)
 
-## 2. Install the tarball into the host's cache
+## 2. Verify a prerelease from npm
 
-The host resolves a bare-name entry from its own cache, `~/.cache/opencode/npm/<name>@<spec>/<generation>/`, where the newest generation wins. Stage the tarball as a new generation:
+Publish the tested prerelease tarball with an explicit dist-tag.
 
 ```sh
-gen=~/.cache/opencode/npm/opencode2-enhanced-composer@latest/$(date +%s%3N)
-mkdir -p "$gen"
-(
-  set -e
-  cd "$gen" || exit
-  npm init -y
-  npm i /tmp/opencode2-enhanced-composer-<version>.tgz
-)
+npm publish "$pack_dir"/opencode2-enhanced-composer-*-rc.*.tgz --tag next
 ```
 
-## 3. Load the bundle
-
-Keep the bare-name entry in `cli.json` — the same entry a registry install uses — start the TUI and send a prompt. The host resolves the bare name to the newest generation and loads `dist/tui.js` through `exports["./tui"]`, the same resolution a registry install gets, minus the registry.
-
-```json
-{
-  "plugins": ["opencode2-enhanced-composer"]
-}
-```
-
-The host reuses the newest generation without contacting the registry, so the staged build stays in place across restarts. Delete the generation directory to fall back to the published version.
-
-## 4. Publish a prerelease
-
-Use a version such as `0.1.0-rc.1`, bumped and merged through a release pull request as in step 6 — before step 1, so the tarball under test is the artifact that ships.
-
-```sh
-npm publish --tag next
-```
-
-Always pass a tag. An untagged publish becomes `latest`, prerelease version or not.
-
-## 5. Install from the registry
-
-Delete the `@next` cache directory first: `plugin add` reuses the newest cached generation without contacting the registry, so a prerelease left over from an earlier verification would be installed instead — and routed by its old exports map.
-
-```sh
-rm -rf ~/.cache/opencode/npm/opencode2-enhanced-composer@next
-```
-
-Add the prerelease with the CLI's plugin command, which installs it into the host cache and adds the entry to `cli.json` (remove any `latest` entry first — the last entry wins):
+Use a fresh OpenCode config and cache for registry verification, or update an existing `@next` install with OpenCode's update command. Use one Enhanced Composer entry in the test config so the selected specifier is clear.
 
 ```sh
 opencode plugin add opencode2-enhanced-composer@next
+opencode plugin update opencode2-enhanced-composer@next
 ```
 
-This is the only step that exercises registry resolution, the plugin-add routing, the `exports` subpath, and the bare-string entry form. Restart the TUI afterwards.
+Start the TUI, send a prompt, and open **Customize footer**. Confirm the footer, composer-top row, and settings persistence. This step exercises public registry resolution for the prerelease.
 
-## 6. Publish the release
+## 3. Publish the stable release
 
-`npm version` refuses a dirty tree, so commit the work first. It writes the version, commits it, and tags it `v<version>` to match the existing tags.
+Build and verify the stable-version tarball at the approved release commit. Push the tag for that commit, publish the tested tarball with `--tag latest`, then create a GitHub release using the same tag. Summarize the fixes, tested OpenCode versions, and any change users need to make. The npm tarball is the release artifact.
 
-`main` only accepts commits through a pull request, so the bump travels on a release branch. Merge it with a merge commit — a rebase or squash merge rewrites the commit and leaves the tag pointing outside `main`'s history:
+## 4. Verify an existing installation upgrades
+
+OpenCode caches one or more generations of each package specifier under `${XDG_CACHE_HOME:-$HOME/.cache}/opencode/npm/` on Linux. `plugin add` and TUI startup can reuse the newest cached generation. `plugin update` checks the configured specifier for a newer version. Restart the TUI and use `opencode plugin list` to check the installed version.
 
 ```sh
-git checkout -b release/<version>
-npm version patch
-git push -u origin release/<version>
-gh pr create --base main --head release/<version> --title <version> --body "..."
-gh pr merge release/<version> --merge --delete-branch --auto
-git checkout main && git pull
-git push origin v<version>
-npm publish
+opencode plugin update opencode2-enhanced-composer
+opencode plugin list
 ```
 
-The tag has to reach the remote before step 7.
-
-## 7. Cut the GitHub release
-
-There is no CHANGELOG, so this body is the changelog. Write it by hand: autogenerated notes would list the version-bump commit and say nothing. On a docs-only release, state that the bundle is unchanged, so nobody upgrades expecting a fix.
-
-```sh
-gh release create v<version> --title v<version> --notes "..."
-```
-
-No assets. The npm tarball is the artifact, and GitHub's source archives cover the tag.
-
-Skip this for a prerelease. Those ship under `--tag next` and are not announcements.
-
-## 8. Invalidate the plugin cache
-
-The host installs a registry plugin under `~/.cache/opencode/npm/<name>@<spec>/<generation>/` on Linux. A generation is a millisecond-timestamped directory with a full `node_modules` inside; the newest generation wins, and the host reuses it without contacting the registry. A restart alone may therefore not pick up a freshly published version. Delete the spec's cache directory and restart the TUI:
-
-```sh
-rm -rf ~/.cache/opencode/npm/opencode2-enhanced-composer@latest ~/.cache/opencode/npm/opencode2-enhanced-composer@next
-```
-
-Restart, then confirm the host installed the version that was just published:
-
-```sh
-grep -h '"version"' ~/.cache/opencode/npm/opencode2-enhanced-composer@latest/*/node_modules/opencode2-enhanced-composer/package.json
-```
-
-One line prints per generation; the last one is the newest. Dropping the `@next` directory too keeps a stale prerelease from being loaded by an old `cli.json` entry. Old generations are pruned when a plugin update runs — only the two newest are kept, and anything older is removed after seven days — so manual cleanup is only needed to force a re-install.
+Use the configured specifier if it includes a tag or range. When upgrading an exact pin, change the entry in `cli.json` to the new version.

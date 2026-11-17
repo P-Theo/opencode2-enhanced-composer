@@ -386,6 +386,14 @@ describe("directoryName", () => {
 })
 
 describe("directoryCandidates", () => {
+  test("keeps control characters in filesystem names out of the terminal output", () => {
+    const location = makeLocation({ directory: "/test/new\nline\u001b[31m" })
+    const candidates = directoryCandidates(location, APPEARANCE, codePointWidth)
+
+    expect(candidates[0]?.text).toContain("new�line�[31m")
+    expect(formatBranchName("one\u2028two", "colon")).toBe("one�two")
+  })
+
   test("name mode shows the whole name as its only candidate", () => {
     const candidates = directoryCandidates(makeLocation(), APPEARANCE, codePointWidth)
 

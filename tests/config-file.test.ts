@@ -1,6 +1,7 @@
 // Persistence tests for `config-file.ts`. Every fixture lives in a fresh
 // temporary directory; no test reads or writes the developer's real `cli.json`.
 import { afterEach, describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
@@ -78,6 +79,27 @@ async function readOk(path: string, pluginDirectory: string): Promise<CliConfigS
   if (result.status !== "ok") throw new Error(`expected a readable config, got ${result.status}`)
 
   return result.snapshot
+}
+
+function runInterleavedSave(
+  path: string,
+  target: string,
+  replacement: string,
+  phase: "temporary" | "validation",
+): SavePluginOptionsResult {
+  const child = spawnSync(process.execPath, [
+    join(import.meta.dir, "config-save-interleaving.ts"), path, target, replacement, phase,
+  ], { encoding: "utf8", timeout: 10_000 })
+
+  if (child.error !== undefined) throw child.error
+
+  if (child.status !== 0) throw new Error(child.stderr || `Save subprocess exited with ${child.status}`)
+
+  const output: { injected: boolean; result: SavePluginOptionsResult } = JSON.parse(child.stdout)
+
+  expect(output.injected).toBe(true)
+
+  return output.result
 }
 
 describe("resolveCliConfigPath", () => {
@@ -385,6 +407,55 @@ describe("readCliConfig", () => {
     const result = await readCliConfig(path, identity(root))
 
     expect(result.status).toBe("invalid")
+  })
+
+  test("reads plugin entries containing coercion method names", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+
+    await writeFixture(path, `{ "plugins": [{ "package": "${PACKAGE_NAME}", "toString": null, "valueOf": null }] }`)
+
+    const snapshot = await readOk(path, root)
+
+    expect(snapshot.matches[0]?.specifier).toBe(PACKAGE_NAME)
+  })
+
+  test("rejects deeply nested, oversized and invalid UTF-8 settings", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+
+    await writeFixture(path, `{"nested":${"[".repeat(10_000)}0${"]".repeat(10_000)}}`)
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "invalid",
+      error: { message: "The CLI config is nested too deeply" },
+    })
+
+    await writeFile(path, " ".repeat(1024 * 1024 + 1))
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "error",
+      error: { message: "The CLI config exceeds 1 MiB" },
+    })
+
+    const invalid = Buffer.concat([Buffer.from('{"test":"'), Buffer.from([0xff]), Buffer.from('"}')])
+
+    await writeFile(path, invalid)
+    expect((await save(path, root, { kind: "create", specifier: PACKAGE_NAME }, [])).status).toBe("error")
+    expect(await readFile(path)).toEqual(invalid)
+  })
+
+  test("rejects non-regular files through a config symlink", async () => {
+    if (process.platform === "win32") return
+
+    const root = await fixture()
+    const path = join(root, "cli.json")
+    const fifo = join(root, "pipe")
+
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0)
+    await symlink(fifo, path)
+    expect(await readCliConfig(path, identity(root))).toMatchObject({
+      status: "error",
+      error: { message: "The CLI config must be a regular file" },
+    })
   })
 
   test("reads a file that starts with a byte-order mark", async () => {
@@ -1209,6 +1280,66 @@ describe("savePluginOptions", () => {
     expect(snapshot.document["theme"]).toEqual({ name: "catppuccin" })
     expect(snapshot.matches).toHaveLength(1)
   })
+
+  test("refuses JSONC edits when decoded keys occur twice", async () => {
+    const root = await fixture()
+    const configPath = join(root, "cli.json")
+    const text = String.raw`{"plugins":[{"package":"${PACKAGE_NAME}","options":{"spinner":"blocks","\u0073pinner":"text"}}]}`
+
+    await writeFixture(configPath, text)
+
+    const result = await save(configPath, root, { kind: "existing", index: 0, specifier: PACKAGE_NAME }, [
+      change(["spinner"], "braille", "text"),
+    ])
+
+    expect(result).toMatchObject({ status: "invalid", error: { message: 'Duplicate property "spinner"', line: 1 } })
+    expect(await readFile(configPath, "utf8")).toBe(text)
+  })
+
+  test("rebases on an external edit arriving while the temporary file is written", async () => {
+    const root = await fixture()
+    const path = join(root, "cli.json")
+    const replacement = join(root, "external.json")
+
+    await writeFixture(path, JSON.stringify({ plugins: [PACKAGE_NAME] }))
+    await writeFixture(replacement, JSON.stringify({ plugins: [PACKAGE_NAME], mouse: false }))
+
+    const result = runInterleavedSave(path, path, replacement, "temporary")
+
+    expect(result.status).toBe("saved")
+
+    const snapshot = await readOk(path, root)
+
+    expect(snapshot.document["mouse"]).toBe(false)
+    expect(snapshot.matches[0]?.options).toEqual({ appearance: { spinner: "blocks" } })
+    expect(await readdir(root)).toEqual(["cli.json"])
+  })
+
+  for (const phase of ["temporary", "validation"] as const) {
+    test(`leaves both files intact when a config symlink is retargeted during ${phase}`, async () => {
+      if (process.platform === "win32") return
+
+      const root = await fixture()
+      const path = join(root, "cli.json")
+      const oldTarget = join(root, "old.json")
+      const newTarget = join(root, "new.json")
+      const newLink = join(root, "new-link")
+      const original = JSON.stringify({ plugins: [PACKAGE_NAME] })
+
+      await writeFixture(oldTarget, original)
+      await writeFixture(newTarget, original)
+      await symlink(oldTarget, path)
+      await symlink(newTarget, newLink)
+
+      const result = runInterleavedSave(path, oldTarget, newLink, phase)
+
+      expect(result).toMatchObject({ status: "error", error: { message: expect.stringContaining("symlink target changed") } })
+      expect(await readFile(oldTarget, "utf8")).toBe(original)
+      expect(await readFile(newTarget, "utf8")).toBe(original)
+      expect((await lstat(path)).isSymbolicLink()).toBe(true)
+      expect((await readdir(root)).sort()).toEqual(["cli.json", "new.json", "old.json"])
+    })
+  }
 
   test("writes through a dangling symlink and creates its target", async () => {
     const root = await fixture()
