@@ -1156,11 +1156,11 @@ async function writeConfigText(snapshot: CliConfigSnapshot, text: string): Promi
     await mkdir(dirname(target), { recursive: true })
     temporary = await writeTemporaryConfig(target, text)
 
+    const current = await readConfigText(target)
+
     if (await resolveWriteTarget(path) !== target) {
       return { status: "error", message: "The CLI config symlink target changed while saving. Reopen the editor and try again." }
     }
-
-    const current = await readConfigText(target)
 
     if (current !== (snapshot.exists ? snapshot.text : undefined)) {
       return { status: "changed", message: "The CLI config kept changing while saving. Try again." }
