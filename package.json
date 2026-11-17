@@ -1,6 +1,6 @@
 {
   "name": "opencode2-enhanced-composer",
-  "version": "0.1.0",
+  "version": "0.1.1-rc.1",
   "description": "Enhanced Composer: configurable OpenCode 2 prompt status with location, token usage, cost, context, live throughput and an in-TUI settings editor",
   "license": "MIT",
   "author": "P-Theo",
